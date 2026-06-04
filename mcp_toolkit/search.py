@@ -1,5 +1,6 @@
-"""Web Search MCP Server — multi-engine search for AI agents."""
+"""Web Search MCP Server — DuckDuckGo search with SSRF protection."""
 
+import asyncio
 import ipaddress
 import json
 import re
@@ -9,17 +10,20 @@ from html.parser import HTMLParser
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
 
 # ── SSRF Protection ─────────────────────────────────────────────
 
-# RFC 1918 / RFC 6598 / loopback / link-local
 _PRIVATE_RANGES = [
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
     ipaddress.IPv4Network("192.168.0.0/16"),
     ipaddress.IPv4Network("127.0.0.0/8"),
     ipaddress.IPv4Network("169.254.0.0/16"),
-    ipaddress.IPv4Network("100.64.0.0/10"),    # CGNAT
+    ipaddress.IPv4Network("100.64.0.0/10"),
     ipaddress.IPv6Network("::1/128"),
     ipaddress.IPv6Network("fc00::/7"),
     ipaddress.IPv6Network("fe80::/10"),
@@ -28,14 +32,11 @@ _PRIVATE_RANGES = [
 
 def _is_private(host: str) -> bool:
     """Check if a hostname/IP resolves to a private/internal address."""
-    # Check if literal IP
     try:
         ip = ipaddress.ip_address(host)
         return any(ip in net for net in _PRIVATE_RANGES)
     except ValueError:
         pass
-
-    # Resolve hostname
     try:
         for addrinfo in socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
             ip_str = addrinfo[4][0]
@@ -44,27 +45,13 @@ def _is_private(host: str) -> bool:
                 return True
     except (socket.gaierror, socket.herror, OSError):
         pass
-
     return False
-
-
-class SSRFError(Exception):
-    """Raised when a URL resolves to an internal/private address."""
-    pass
 
 
 # ── Web Search ──────────────────────────────────────────────────
 
 def web_search(query: str, limit: int = 5) -> dict:
-    """Search the web using DuckDuckGo.
-
-    Args:
-        query: Search query string.
-        limit: Maximum number of results.
-
-    Returns:
-        Dict with 'results' key containing search results.
-    """
+    """Search the web using DuckDuckGo."""
     try:
         url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -77,32 +64,19 @@ def web_search(query: str, limit: int = 5) -> dict:
 
 
 def web_extract(url: str) -> dict:
-    """Extract text content from a URL.
-
-    Blocks URLs that resolve to private/internal IPs (SSRF protection).
-
-    Args:
-        url: The URL to extract content from.
-
-    Returns:
-        Dict with extracted content.
-    """
+    """Extract text content from a URL (SSRF-protected)."""
     try:
-        # SSRF guard: check host before making request
         parsed = urlparse(url)
         host = parsed.hostname
         if not host:
             return {"url": url, "error": "Invalid URL: no hostname"}
         if _is_private(host):
             return {"url": url, "error": "SSRF blocked: internal/private IP"}
-
         req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
         resp = urlopen(req, timeout=15)
         html = resp.read().decode(errors="ignore")
         text = _html_to_text(html)
         return {"url": url, "content": text[:5000], "length": len(text)}
-    except SSRFError as e:
-        return {"url": url, "error": str(e)}
     except Exception as e:
         return {"url": url, "error": str(e)}
 
@@ -110,8 +84,6 @@ def web_extract(url: str) -> dict:
 # ── DuckDuckGo HTML Parser ──────────────────────────────────────
 
 def _parse_ddg(html: str, limit: int) -> list:
-    """Parse DuckDuckGo HTML results."""
-
     class DDGParser(HTMLParser):
         def __init__(self):
             super().__init__()
@@ -151,7 +123,6 @@ def _parse_ddg(html: str, limit: int) -> list:
 # ── HTML to text ────────────────────────────────────────────────
 
 def _html_to_text(html: str) -> str:
-    """Simple HTML to text conversion."""
     text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
@@ -159,66 +130,61 @@ def _html_to_text(html: str) -> str:
     return text.strip()
 
 
-# ── MCP handler ─────────────────────────────────────────────────
+# ── MCP Server ──────────────────────────────────────────────────
 
-def _handle_request(request: dict) -> dict:
-    """Handle a JSON-RPC style MCP request."""
-    method = request.get("method", "")
-    params = request.get("params", {})
+server = Server("mcp-toolkit-search")
 
-    if method == "tools/list":
-        return {
-            "tools": [
-                {
-                    "name": "web_search",
-                    "description": "Search the web using DuckDuckGo",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Search query"},
-                            "limit": {"type": "integer", "description": "Max results", "default": 5},
-                        },
-                        "required": ["query"],
-                    },
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="web_search",
+            description="Search the web using DuckDuckGo",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Max results", "default": 5},
                 },
-                {
-                    "name": "web_extract",
-                    "description": "Extract text content from a public URL (SSRF-protected: blocks internal IPs)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "url": {"type": "string", "description": "URL to extract (public addresses only)"},
-                        },
-                        "required": ["url"],
-                    },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="web_extract",
+            description="Extract text content from a public URL (SSRF-protected: blocks internal IPs)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "URL to extract (public addresses only)"},
                 },
-            ]
-        }
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-        if tool_name == "web_search":
-            return {"content": [{"type": "text", "text": json.dumps(web_search(**tool_args), ensure_ascii=False)}]}
-        elif tool_name == "web_extract":
-            return {"content": [{"type": "text", "text": json.dumps(web_extract(**tool_args), ensure_ascii=False)}]}
-
-    return {"error": f"Unknown method: {method}"}
+                "required": ["url"],
+            },
+        ),
+    ]
 
 
-# ── Server ──────────────────────────────────────────────────────
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name == "web_search":
+        result = web_search(**arguments)
+    elif name == "web_extract":
+        result = web_extract(**arguments)
+    else:
+        raise ValueError(f"Unknown tool: {name}")
+    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+
+async def serve_async():
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
 
 def serve():
-    """Start MCP server over stdio."""
-    sys.stderr.write("MCP Search Server starting...\n")
+    """Start MCP Search Server over stdio."""
+    sys.stderr.write("MCP Search Server starting (mcp SDK)...\n")
     sys.stderr.flush()
-    for line in sys.stdin:
-        try:
-            request = json.loads(line.strip())
-            response = _handle_request(request)
-            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
-        except json.JSONDecodeError:
-            continue
+    asyncio.run(serve_async())
 
 
 if __name__ == "__main__":

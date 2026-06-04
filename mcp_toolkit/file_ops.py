@@ -1,10 +1,15 @@
 """File Operations MCP Server for AI agents — workspace-sandboxed."""
 
+import asyncio
 import json
 import os
 import sys
 from pathlib import Path
 import glob as glob_module
+
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
 
 from .workspace import Workspace, PathEscapeError
 
@@ -22,16 +27,6 @@ EXCLUDED_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__",
 # ── File operations ─────────────────────────────────────────────
 
 def read_file(path: str, offset: int = 1, limit: int = 500) -> dict:
-    """Read a file with line numbers, workspace-bounded.
-
-    Args:
-        path: Relative path inside workspace.
-        offset: 1-indexed start line.
-        limit: Max lines to return.
-
-    Returns:
-        Dict with content, total_lines, path.
-    """
     try:
         resolved = _resolve(path)
         if resolved.stat().st_size > MAX_FILE_SIZE:
@@ -54,17 +49,6 @@ def read_file(path: str, offset: int = 1, limit: int = 500) -> dict:
 
 
 def write_file(path: str, content: str) -> dict:
-    """Write content to a file, workspace-bounded.
-
-    Requires --allow-write. Overwriting requires --allow-overwrite.
-
-    Args:
-        path: Relative path inside workspace.
-        content: Text content to write.
-
-    Returns:
-        Dict with written byte count, path.
-    """
     if not _allow_write:
         return {"error": "Write not allowed (use --allow-write)", "path": path}
     try:
@@ -84,14 +68,6 @@ def write_file(path: str, content: str) -> dict:
 
 
 def list_dir(path: str = ".") -> dict:
-    """List workspace directory contents.
-
-    Args:
-        path: Relative path inside workspace (default: root).
-
-    Returns:
-        Dict with entries list and path.
-    """
     try:
         resolved = _resolve(path)
         if not resolved.is_dir():
@@ -99,7 +75,7 @@ def list_dir(path: str = ".") -> dict:
         entries = []
         for entry in sorted(os.listdir(resolved)):
             if entry.startswith("."):
-                continue  # skip hidden
+                continue
             full = resolved / entry
             entries.append({
                 "name": entry,
@@ -117,16 +93,6 @@ def list_dir(path: str = ".") -> dict:
 
 
 def search_files(pattern: str, path: str = ".", file_glob: str = None) -> dict:
-    """Search file contents for a substring pattern, workspace-bounded.
-
-    Args:
-        pattern: Substring to search for.
-        path: Subdirectory inside workspace (default: root).
-        file_glob: Glob pattern to filter files (e.g. '*.py').
-
-    Returns:
-        Dict with matches list.
-    """
     try:
         resolved = _resolve(path)
         search_glob = file_glob or "**/*"
@@ -135,11 +101,10 @@ def search_files(pattern: str, path: str = ".", file_glob: str = None) -> dict:
             fpath_obj = Path(fpath) if isinstance(fpath, str) else fpath
             fpath_str = str(fpath_obj)
 
-            # Skip excluded dirs and hidden files
-            parts = fpath_obj.relative_to(resolved).parts if hasattr(fpath_obj, 'relative_to') else ()
+            parts = fpath_obj.relative_to(resolved).parts
             if any(p in EXCLUDED_DIRS for p in parts):
                 continue
-            if fpath_obj.name.startswith(".") if hasattr(fpath_obj, 'name') else False:
+            if fpath_obj.name.startswith("."):
                 continue
 
             if os.path.isfile(fpath_str):
@@ -168,116 +133,103 @@ def search_files(pattern: str, path: str = ".", file_glob: str = None) -> dict:
 
 # ── Helpers ─────────────────────────────────────────────────────
 
-def _resolve(user_path: str):
-    """Resolve path within workspace, raising on escape."""
+def _resolve(user_path: str) -> Path:
     if _workspace is None:
         raise RuntimeError("Workspace not configured — call serve() first")
     return _workspace.resolve(user_path)
 
 
-# ── MCP handler ─────────────────────────────────────────────────
+# ── MCP Server ──────────────────────────────────────────────────
 
-def _handle_request(request: dict) -> dict:
-    method = request.get("method", "")
-    params = request.get("params", {})
+server = Server("mcp-toolkit-file")
 
-    if method == "tools/list":
-        return {
-            "tools": [
-                {
-                    "name": "read_file",
-                    "description": f"Read a file with line numbers (max {MAX_FILE_SIZE//1024//1024}MB)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path inside workspace"},
-                            "offset": {"type": "integer", "default": 1},
-                            "limit": {"type": "integer", "default": 500},
-                        },
-                        "required": ["path"],
-                    },
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="read_file",
+            description=f"Read a file with line numbers (max {MAX_FILE_SIZE//1024//1024}MB)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative path inside workspace"},
+                    "offset": {"type": "integer", "default": 1},
+                    "limit": {"type": "integer", "default": 500},
                 },
-                {
-                    "name": "write_file",
-                    "description": "Write content to a file (requires --allow-write)",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Relative path inside workspace"},
-                            "content": {"type": "string"},
-                        },
-                        "required": ["path", "content"],
-                    },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="write_file",
+            description="Write content to a file (requires --allow-write)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Relative path inside workspace"},
+                    "content": {"type": "string"},
                 },
-                {
-                    "name": "list_dir",
-                    "description": "List contents of a directory inside workspace",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "default": ".", "description": "Relative path"},
-                        },
-                    },
+                "required": ["path", "content"],
+            },
+        ),
+        Tool(
+            name="list_dir",
+            description="List contents of a directory inside workspace",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "default": ".", "description": "Relative path"},
                 },
-                {
-                    "name": "search_files",
-                    "description": "Search file contents with substring matching",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "pattern": {"type": "string", "description": "Substring to search for"},
-                            "path": {"type": "string", "default": ".", "description": "Subdirectory to search"},
-                            "file_glob": {"type": "string", "description": "Glob to filter files (e.g. '*.py')"},
-                        },
-                        "required": ["pattern"],
-                    },
+            },
+        ),
+        Tool(
+            name="search_files",
+            description="Search file contents with substring matching",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "Substring to search for"},
+                    "path": {"type": "string", "default": ".", "description": "Subdirectory to search"},
+                    "file_glob": {"type": "string", "description": "Glob to filter files (e.g. '*.py')"},
                 },
-            ]
-        }
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-        tools = {
-            "read_file": read_file,
-            "write_file": write_file,
-            "list_dir": list_dir,
-            "search_files": search_files,
-        }
-        fn = tools.get(tool_name)
-        if fn:
-            result = fn(**tool_args)
-            return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
-
-    return {"error": f"Unknown method: {method}"}
+                "required": ["pattern"],
+            },
+        ),
+    ]
 
 
-# ── Server ──────────────────────────────────────────────────────
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    tools = {
+        "read_file": read_file,
+        "write_file": write_file,
+        "list_dir": list_dir,
+        "search_files": search_files,
+    }
+    fn = tools.get(name)
+    if not fn:
+        raise ValueError(f"Unknown tool: {name}")
+    result = fn(**arguments)
+    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+
+
+async def serve_async():
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
+
 
 def serve(workspace_root: str = ".", allow_write: bool = False,
           allow_overwrite: bool = False):
-    """Start MCP File Server with workspace sandbox.
-
-    Args:
-        workspace_root: Root directory for all file ops.
-        allow_write: Enable write_file (default: read-only).
-        allow_overwrite: Allow overwriting existing files.
-    """
+    """Start MCP File Server with workspace sandbox."""
     global _workspace, _allow_write, _allow_overwrite
     _workspace = Workspace(workspace_root)
     _allow_write = allow_write
     _allow_overwrite = allow_overwrite
 
-    sys.stderr.write(f"MCP File Server starting (workspace={_workspace.root}, "
+    sys.stderr.write(f"MCP File Server starting (mcp SDK, workspace={_workspace.root}, "
                      f"write={allow_write}, overwrite={allow_overwrite})\n")
     sys.stderr.flush()
-    for line in sys.stdin:
-        try:
-            request = json.loads(line.strip())
-            response = _handle_request(request)
-            sys.stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            sys.stdout.flush()
-        except json.JSONDecodeError:
-            continue
+    asyncio.run(serve_async())
 
 
 if __name__ == "__main__":
