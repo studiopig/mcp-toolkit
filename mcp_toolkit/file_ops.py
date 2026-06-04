@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 import glob as glob_module
 
 from .workspace import Workspace, PathEscapeError
@@ -172,14 +173,6 @@ def _resolve(user_path: str):
     if _workspace is None:
         raise RuntimeError("Workspace not configured — call serve() first")
     return _workspace.resolve(user_path)
-
-
-# For type-checker
-try:
-    from pathlib import Path
-except ImportError:
-    pass
-Path = __import__('pathlib').Path
 
 
 # ── MCP handler ─────────────────────────────────────────────────
