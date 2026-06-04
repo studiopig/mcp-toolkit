@@ -136,6 +136,26 @@ mcp-toolkit/
 
 ---
 
+---
+
+## 🔒 Security
+
+**mcp-toolkit exposes real system access to AI agents.** For safety:
+
+| Feature | Default | Opt-in |
+|---------|:------:|:------:|
+| File read | ✅ | — |
+| File write | ❌ | `--allow-write` |
+| File overwrite | ❌ | `--allow-overwrite` |
+| Path sandbox | ✅ workspace | — |
+| Shell commands | ❌ | allowlist only |
+| Env var read | ✅ whitelist | — |
+| Web extract | ✅ SSRF guard | — |
+
+**Never expose write or shell tools to untrusted prompts.** All paths are confined within `--workspace`.
+
+---
+
 ## 🤝 贡献
 
 欢迎 PR！特别需要：
