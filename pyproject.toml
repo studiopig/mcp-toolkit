@@ -31,3 +31,6 @@ Repository = "https://github.com/studiopig/mcp-toolkit"
 
 [project.scripts]
 mcp-toolkit = "mcp_toolkit.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mcp_toolkit"]
