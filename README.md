@@ -129,7 +129,6 @@ mcp-toolkit/
 │   ├── search.py       # Web Search MCP Server
 │   ├── file_ops.py     # File Ops MCP Server
 │   ├── shell.py        # Shell MCP Server
-│   └── utils.py        # 工具函数
 ├── README.md
 ├── LICENSE
 └── pyproject.toml

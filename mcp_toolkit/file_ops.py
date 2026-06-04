@@ -119,7 +119,7 @@ def _handle_request(request: dict) -> dict:
                 },
                 {
                     "name": "search_files",
-                    "description": "Search file contents with regex",
+                    "description": "Search file contents with substring matching",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
