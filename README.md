@@ -101,16 +101,50 @@ mcp-toolkit all
 
 **mcp-toolkit exposes real system access to AI agents.** 安全设计：
 
-| 能力 | 默认值 | 启用方式 |
-|---------|:------:|:------:|
-| 文件读取 | ✅ | — |
-| 文件写入 | ❌ | `--allow-write` |
-| 文件覆盖 | ❌ | `--allow-overwrite` |
-| 路径沙箱 | ✅ workspace | — |
-| Shell 命令 | ❌ | 白名单 only |
-| 环境变量读取 | ✅ 白名单 | — |
-| Web 提取 SSRF | ✅ 内网 IP 拦截 | — |
-| 大文件限制 | 10MB | — |
+### 🔐 权限矩阵
+
+| 能力 | 默认状态 | 开启方式 | 风险等级 |
+|------|:--:|------|:--:|
+| 文件读取 | ✅ 开启 | 无需额外参数 | 🟢 低 |
+| 目录列表 | ✅ 开启 | 无需额外参数 | 🟢 低 |
+| 文件写入 | ❌ 关闭 | `--allow-write` | 🟡 中 |
+| 文件覆盖 | ❌ 关闭 | `--allow-overwrite` | 🟡 中 |
+| Shell 执行 | ❌ 关闭 | 白名单 only | 🔴 高 |
+| 网页搜索 | ✅ 开启 | 无需额外参数 | 🟢 低 |
+| 网页内容提取 | ✅ 开启 | 无需额外参数 | 🟡 中 |
+| 环境变量读取 | ✅ 白名单 | — | 🟡 中 |
+| 路径沙箱 | ✅ 强制 | — | 🛡️ 保护 |
+| SSRF 防护 | ✅ 内网 IP 拦截 | — | 🛡️ 保护 |
+| 大文件限制 | ✅ 10MB | — | 🛡️ 保护 |
+
+### ⚡ 危险组合
+
+以下组合在特定场景下风险较高：
+
+| 组合 | 风险 | 建议 |
+|------|------|------|
+| `--allow-write` + Shell | Agent 可写入脚本后执行 | 只在隔离环境中同时开启 |
+| `web_extract` + `--allow-write` | 网页内容可注入本地文件 | 限制写入目录不在 PATH 中 |
+| Shell 白名单含 `python/node` | 等价于给 Agent 本地执行能力 | 仅在完全可信的 workspace 中使用 |
+| workspace 指向 `$HOME` 或 `/` | Agent 可操作所有个人文件 | 始终指向独立项目目录 |
+| `all` 模式 | 开启所有能力 | 不推荐新手使用，仅限完全隔离环境 |
+
+### 🚀 推荐使用方式
+
+```bash
+# 最安全：只开文件读取 + 搜索
+mcp-toolkit search          # 搜索 server
+mcp-toolkit file --workspace ./project   # 只读文件 server
+
+# 需要写文件时
+mcp-toolkit file --workspace ./project --allow-write
+
+# 需要 Shell 时（谨慎）
+mcp-toolkit file --workspace ./project --allow-write --allow-shell
+
+# ⚠️ 不推荐新手
+mcp-toolkit all  # 所有能力全开，仅限沙箱环境
+```
 
 **Never expose write or shell tools to untrusted prompts.** 所有文件操作限定在 `--workspace` 内，路径逃逸被拦截。
 
