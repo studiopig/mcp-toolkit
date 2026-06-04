@@ -17,7 +17,7 @@ MCP 生态缺一套**安全可控、开箱即用**的工具集。`mcp-toolkit` �
 - 🚀 一行命令启动 MCP Server
 - 🔍 内置 web_search、file_ops、shell 等高频工具
 - 🔒 安全优先：默认只读、workspace 沙箱、命令白名单
-- ⚡ 轻量无依赖（核心仅需 Python 3.10+）
+- ⚡ 轻量依赖（核心仅需 Python 3.10+ + mcp 库）
 
 ---
 
