@@ -32,9 +32,12 @@ def test_workspace_parent_escape():
 
 
 def test_workspace_absolute_escape():
+    import sys
     ws = Workspace(tempfile.mkdtemp())
+    # Platform-independent absolute path outside workspace
+    evil = "C:/Windows/System32" if sys.platform == "win32" else "/etc"
     with pytest.raises(PathEscapeError):
-        ws.resolve("C:/Windows/System32")
+        ws.resolve(evil)
     shutil.rmtree(str(ws.root), ignore_errors=True)
 
 
